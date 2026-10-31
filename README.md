@@ -112,7 +112,7 @@ longest stage name — `Connection` — so every stage lines up and none is padd
 ```
 [  Config  ] Read config from '~/.config/gimme/config.yaml', version:2
 [   NZB    ] Files: 14, Segments: 9280
-[ Password ] Detected: HtO65TY…TJxzq (from filename)
+[ Password ] Detected: superPassWord(from filename)
 [Connection] me@news.tweaknews.eu  Port: 563, TLS: on
 [ Download ] [================>       ]  63%  3.7 GiB  19.7 MiB/s  17s
 [m0001-1170] ██████████████████🬝🬎🬆🬂█🬬🬄🬂·████🬎🬆···················…
@@ -124,7 +124,7 @@ longest stage name — `Connection` — so every stage lines up and none is padd
 [  Unpack  ] RAR set from Cool/release.part1.rar
 [ Extract  ] [====>                   ]  2.1 GiB  240 MiB/s  9s
 [m0001-1170] ████████████████████████████████████████████…
-[   Done   ] output at out/…paranoid06.mkv
+[   Done   ] output at out/…paranoid-deineOma!.mkv
 ```
 
 The download phase is a **single** aggregate line (`percent · bytes · rate ·
