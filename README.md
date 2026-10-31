@@ -178,8 +178,8 @@ If present and you did **not** pass `-p`, gimme extracts it automatically and
 logs the source:
 
 ```sh
-./gimme -f 'CR.WEB.H264-DRiFTKiNG{{HtO65TYLYUOARNPsCUk0ALjXmTJxzq}}.nzb' -o out
-# [ Password  ] Detected: HtO65TYLYUOARNPsCUk0ALjXmTJxzq (from filename)
+./gimme -f 'CR.WEB.H264-DRiFTKiNG{{superPassWord}}.nzb' -o out
+# [ Password  ] Detected: superPassWord (from filename)
 ```
 
 Precedence: explicit `-p` > filename-embedded `{{…}}`. Plain `{password}` and
@@ -192,8 +192,8 @@ is named after the NZB file — everything before the `.nzb` extension and the
 `{{password}}` suffix — keeping the payload's real extension:
 
 ```sh
-./gimme -f 'Reborn.…CR.WEB.H264-DRiFTKiNG{{HtO65TY…}}.nzb' -o Reborn
-# → Reborn/Reborn.…CR.WEB.H264-DRiFTKiNG.mkv
+./gimme -f '.…CR.WEB.H264-DRiFTKiNG{{superPas…}}.nzb' -o Reborn
+# → .…CR.WEB.H264-DRiFTKiNG.mkv
 ```
 
 A single extracted/passthrough file is renamed to that release name; multi-file
