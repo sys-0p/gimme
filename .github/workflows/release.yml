@@ -1,0 +1,119 @@
+name: Release
+
+# Publish prebuilt binaries whenever a version tag (vX.Y.Z) is pushed.
+# Trigger example: git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags:
+      - "v*"
+
+# GITHUB_TOKEN is used by softprops/action-gh-release to create the release.
+permissions:
+  contents: write
+
+jobs:
+  # Guard the loose `v*` trigger down to a strict vX.Y.Z semver, and surface the
+  # bare version (no leading `v`) as an output for the build/release jobs.
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - id: check
+        name: Validate tag is vX.Y.Z
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "Releasing version ${BASH_REMATCH[1]} (from tag $TAG)"
+          else
+            echo "::error::Tag '$TAG' is not a valid version (expected vX.Y.Z, e.g. v1.2.3)"
+            exit 1
+          fi
+
+  build:
+    needs: meta
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    env:
+      # Pure-Go deps only (x/sys, x/term) — no cgo, so cross-compiling from
+      # linux runners to darwin/windows works without a target toolchain.
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build gimme (${{ matrix.goos }}/${{ matrix.goarch }})
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          # -X main.version=... is a no-op if the symbol doesn't exist yet, but
+          # wires up version reporting the moment a `var version string` is added
+          # in package main.
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" \
+            -o "dist/gimme-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}/gimme" \
+            ./cmd/gimme
+
+      - name: Package as .tar.gz
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          cd "dist/gimme-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          tar czf "../gimme-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" gimme
+          cd ..
+          rm -rf "gimme-${VERSION}-${{ matrix.goos }}-${{ matrix.goarch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gimme-${{ needs.meta.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Aggregate checksums
+        working-directory: dist
+        run: |
+          # download-artifact drops each artifact into its own subdir named after
+          # the artifact; the tarballs already encode os/arch in their names, so
+          # hoist them all up to dist/ and drop the now-empty subdirs.
+          find . -mindepth 2 -name 'gimme-*.tar.gz' -exec mv -f {} . \;
+          find . -mindepth 1 -maxdepth 1 -type d -exec rmdir {} \;
+          sha256sum gimme-*.tar.gz > checksums.txt
+          echo "Assets to publish:"
+          ls -1
+          echo "--- checksums.txt ---"
+          cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: gimme ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
