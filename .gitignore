@@ -1,0 +1,8 @@
+# Compiled binary from `go build -o gimme ./cmd/gimme`
+/gimme
+
+# Local release/CI build output
+/dist/
+
+# OS cruft
+.DS_Store
