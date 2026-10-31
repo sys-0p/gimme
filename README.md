@@ -178,8 +178,8 @@ If present and you did **not** pass `-p`, gimme extracts it automatically and
 logs the source:
 
 ```sh
-./gimme -f 'CR.WEB.H264-DRiFTKiNG{{HtO65TYLYUOARuNPCUk0ALjXmTJxzq}}.nzb' -o out
-# [ Password  ] Detected: HtO65TYLYUOARuNPCUk0ALjXmTJxzq (from filename)
+./gimme -f 'CR.WEB.H264-DRiFTKiNG{{HtO65TYLYUOARNPsCUk0ALjXmTJxzq}}.nzb' -o out
+# [ Password  ] Detected: HtO65TYLYUOARNPsCUk0ALjXmTJxzq (from filename)
 ```
 
 Precedence: explicit `-p` > filename-embedded `{{…}}`. Plain `{password}` and
