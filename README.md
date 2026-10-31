@@ -1,5 +1,9 @@
 # gimme
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/sys-0p/gimme/refs/heads/main/assets/gimme.jpg" />
+</p>
+
 A minimal NZB leecher for Usenet, in Go. Downloads an `.nzb` from your NNTP
 provider(s), **auto-repairs corruption with PAR2 while unpacking**, and writes
 the final decompressed file(s) to disk.
