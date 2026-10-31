@@ -270,3 +270,4 @@ internal/ui/       plain progress bar + leveled logging
   be dropped in.
 - `-o` is treated as a directory when a RAR set extracts multiple files; a
   single result is written directly to the `-o` path.
+- Qwen3.8 Flash was used in implementing the design <3
