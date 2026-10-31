@@ -1,0 +1,32 @@
+# gimme configuration
+#
+# All runtime behaviour is tunable here — no need to edit Go code.
+# This is a starter template written on first run — fill in your own provider.
+# Both username and password may reference environment variables using either
+# ${ENV_VAR} or $(ENV_VAR); they are expanded from the environment at load time.
+# Unset references are left literal (so a missing export is obvious, not a blank
+# credential). NOTE: keep `connections` at/below your account's simultaneous
+# connection limit (many providers allow ~10-20; far more can cause auth errors).
+
+version: 2
+
+defaults:
+  # Which provider to use by default. Override on the CLI with -s <name>.
+  provider: main
+  # How many times to retry fetching a single segment before giving up on it
+  # (and leaving a gap for PAR2 to repair).
+  max_retries: 3
+  # Verbose progress/log output by default. Override with -v / -q on the CLI.
+  verbose: true
+
+providers:
+  # TODO: replace these placeholders with your Usenet provider's details.
+  - name: main
+    host: news.example.com
+    port: 563
+    encryption: true
+    username: "$(NZB_USER)"
+    password: "${NZB_PASS}"
+    connections: 20
+    priority: 1
+
