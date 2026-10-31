@@ -456,10 +456,10 @@ func (u *UI) VLine(s Style, name, fields string) {
 
 // logo is the fixed-width ASCII wordmark, drawn from quadrant/block glyphs so the
 // shapes line up on any monospaced terminal. Shown once at the very top of a run.
-const logo = `               ▂▂▂▂▂▂▂  ▂▂  ▂▂▂▂▂▂▂▂   ▂▂▂▂▂▂▂▂   ▂▂▂▂▂▂ .
-              ▐█▊  ▂▂▂  ▄▄ ██▊ █▊ ██▊ ██▊ █▊ ██▊ ██  ▃▂█▎
-              ▐██▇▇▇██▊ ██ ██▊ █▊ ██▊ ██▊ █▊ ██▊ ██▆▆▆▆▆▆
-                    ██▊                               -m|d`
+const logo = `              ▂▂▂▂▂▂▂  ▂▂  ▂▂▂▂▂▂▂▂   ▂▂▂▂▂▂▂▂   ▂▂▂▂▂▂ .
+             ▐█▊  ▂▂▂  ▄▄ ██▊ █▊ ██▊ ██▊ █▊ ██▊ ██  ▃▂█▎
+             ▐██▇▇▇██▊ ██ ██▊ █▊ ██▊ ██▊ █▊ ██▊ ██▆▆▆▆▆▆
+                  ██▊                               -m|d`
 
 // Logo prints the wordmark banner once, as the very first output of a run (before
 // any stage line). Hidden under -quiet. Rendered dim so it reads as a soft
