@@ -103,7 +103,7 @@ Instead of running `nzbgo` by hand and pasting the saved path into `-f`, pass th
 the normal pipeline (so `{{password}}` detection and release naming still apply):
 
 ```sh
-./gimme -n "nzblnk:?t=Totally.Legal.Cinema.1994.1080p&h=n0tAr3aLhAsHNotARealHeader&p=hunter2&g=alt.binaries.warez&d=01.01.2000" -o ~/Downloads/
+./gimme -n "nzblnk:?t=ds=01.01.2000" -o ~/Downloads/
 ```
 
 nzbgo only saves the `.nzb` (and prints its path) when its `target` is
