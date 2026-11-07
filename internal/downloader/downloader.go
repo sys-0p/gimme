@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -31,6 +32,13 @@ import (
 var (
 	bracketRe = regexp.MustCompile(`\[[^\]]*\]`)  // [01/10]
 	tailRe    = regexp.MustCompile(`\(\d+/\d+\)`) // (1/3)
+	// structuralExtRe matches filenames whose extension the pipeline keys on for
+	// archive/parity handling: RAR volumes (.rar and classic .r00-.r99), PAR2
+	// parity (.par2), other archives, and generic .001-style split chunks. When a
+	// poster obfuscates the yEnc header filename into an extensionless hash, these
+	// extensions must survive — losing .rar/.par2 silently defeats RAR extraction
+	// and PAR2 repair and yields a truncated passthrough.
+	structuralExtRe = regexp.MustCompile(`(?i)\.(rar|par2|zip|7z|r[0-9]{2}|[0-9]{3})$`)
 )
 
 // FileResult is the per-file outcome of a download.
@@ -281,15 +289,28 @@ func fetchAndPlace(ctx context.Context, w *fetcher.Worker, t task, buf []byte, n
 
 // lockName sets *name from a yEnc/subject-derived partName the first time one
 // appears (all segments of a file share it) and returns the current name.
+//
+// *name arrives pre-filled from the NZB subject via fallbackName. Some posters
+// obfuscate the yEnc header filename into an extensionless hash while leaving the
+// real name (with its .rar/.par2 extension) in the NZB subject. Overwriting the
+// subject name with such a hash would strip the extension and silently break RAR
+// extraction and PAR2 repair, so we keep the subject name when it carries a
+// structural extension that the incoming yEnc name lacks.
 func lockName(name *string, named *bool, mu *sync.Mutex, partName string) string {
 	mu.Lock()
 	defer mu.Unlock()
 	if !*named && partName != "" {
-		*name = cleanName(partName)
+		if cand := cleanName(partName); !(hasStructuralExt(*name) && !hasStructuralExt(cand)) {
+			*name = cand
+		}
 		*named = true
 	}
 	return *name
 }
+
+// hasStructuralExt reports whether name ends in an extension the unpack/repair
+// pipeline relies on (RAR/PAR2/archive/split-chunk).
+func hasStructuralExt(name string) bool { return structuralExtRe.MatchString(name) }
 
 // setLen records a file's authoritative length: the largest of the byte offset
 // just written (`end`) and the yEnc total file size (`size`, from size=). The
@@ -336,11 +357,13 @@ func workerCount(pool *fetcher.Pool) int {
 
 // fallbackName derives a usable filename from NZB metadata before any yEnc
 // header is seen. Real subjects look like:  "[01/10] - release.part1.rar" (1/3)
-// so we strip the wrapping quotes, the [N/M] group, and the trailing (N/M).
+// so we un-escape XML entities (&quot; &amp; …, which NZB subjects carry), strip
+// the wrapping quotes, the [N/M] group, and the trailing (N/M).
 func fallbackName(f nzb.File, idx int) string {
 	s := f.Subject
 	if s != "" {
-		s = strings.ReplaceAll(s, "\"", "")
+		s = html.UnescapeString(s)            // &quot; -> " (NZB subjects are XML-escaped)
+		s = strings.ReplaceAll(s, "\"", "")   // then drop the quote delimiters
 		s = bracketRe.ReplaceAllString(s, "") // [01/10]
 		s = tailRe.ReplaceAllString(s, "")    // (1/3)
 		s = strings.TrimSpace(strings.Trim(strings.TrimSpace(s), "-"))

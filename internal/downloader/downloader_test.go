@@ -173,6 +173,62 @@ func TestFallbackName(t *testing.T) {
 	}
 }
 
+func TestHasStructuralExt(t *testing.T) {
+	yes := []string{"a.part01.rar", "a.part10.RAR", "movie.par2", "vol00-01.PAR2", "a.r00", "b.zip", "c.7z", "d.001"}
+	no := []string{"VzNi2PVxQ8OUQrZelsvTio0jyZJzYJ", "file005.bin", "movie.mkv", "notes.nfo", "a.abc"}
+	for _, s := range yes {
+		if !hasStructuralExt(s) {
+			t.Errorf("hasStructuralExt(%q)=false want true", s)
+		}
+	}
+	for _, s := range no {
+		if hasStructuralExt(s) {
+			t.Errorf("hasStructuralExt(%q)=true want false", s)
+		}
+	}
+}
+
+func TestFallbackNameHTMLEntities(t *testing.T) {
+	// NZB subjects carry &quot; for the quote delimiters (as seen in the wild).
+	f := nzb.File{Subject: `[02/18] - &quot;The.Road.Within.2014.part01.rar&quot; yEnc (1/732)`}
+	if got := fallbackName(f, 1); got != "The.Road.Within.2014.part01.rar" {
+		t.Fatalf("fallbackName(HTML) = %q", got)
+	}
+}
+
+// TestLockNameKeepsStructuralSubjectOverObfuscatedYenc is the regression test for
+// the "500 MB output from a 5 GiB release" bug: a poster obfuscates the yEnc
+// header filename into an extensionless hash. lockName must NOT overwrite the
+// subject-derived name (which carries .rar/.par2), or RAR/PAR2 detection breaks.
+func TestLockNameKeepsStructuralSubjectOverObfuscatedYenc(t *testing.T) {
+	cases := []struct {
+		name    string
+		subject string // *name pre-filled from fallbackName
+		yenc    string // partName from the yEnc header
+		want    string
+	}{
+		{"obfuscated hash keeps subject .rar", "The.Road.part01.rar", "6wZmg5pk7PYMbFJsNQIjdhQTpNUbwJderhfbFrc5OQJkd2BKhAssqBh", "The.Road.part01.rar"},
+		{"obfuscated hash keeps subject .par2", "release.vol00-01.par2", "aX9zQ1b2c3d4e5f6g7h8i9j0", "release.vol00-01.par2"},
+		{"normal yenc matches subject", "movie.part1.rar", "movie.part1.rar", "movie.part1.rar"},
+		{"good yenc fills extensionless subject", "file005.bin", "real.movie.mkv", "real.movie.mkv"},
+		{"good yenc wins over placeholder", "file005.bin", "movie.mkv", "movie.mkv"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name := tc.subject
+			named := false
+			var mu sync.Mutex
+			got := lockName(&name, &named, &mu, tc.yenc)
+			if got != tc.want {
+				t.Fatalf("lockName = %q want %q", got, tc.want)
+			}
+			if !named {
+				t.Fatal("named should be set after first call")
+			}
+		})
+	}
+}
+
 func TestCleanName(t *testing.T) {
 	cases := map[string]string{
 		"movie.part1.rar yEnc":  "movie.part1.rar",

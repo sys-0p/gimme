@@ -76,10 +76,15 @@ providers:
 
 ```
 gimme -f <nzb> -o <output> [flags]
+gimme -n <nzblnk> -o <output> [flags]
 
-  -f        path to .nzb file (required)
+  -f        path to .nzb file         (required unless -n is used)
+  -n        NZBLNK URI - resolves it into an .nzb via the nzbgo CLI, then leeches
+            it (alternative to -f; see "Resolving NZBLNK via nzbgo" below)
   -o        output directory for the final file (required)
   -c        path to config.yaml          (default ~/.config/gimme/config.yaml)
+  -nzbgo    path to the nzbgo binary     (used with -n, default "nzbgo")
+  -nzbgo-config  base nzbgo config to copy & force target=EXECUTE (used with -n)
   -s        provider name to use/swap    (overrides config default)
   -p        password for encrypted RAR archives
   -work     persistent work directory  (default: $TMPDIR/gimme/<id>)
@@ -89,6 +94,33 @@ gimme -f <nzb> -o <output> [flags]
   -q        quiet (no progress bar or logs)
   -dry-run  parse NZB + config and exit without downloading
 ```
+
+### Resolving NZBLNK via nzbgo
+
+Instead of running `nzbgo` by hand and pasting the saved path into `-f`, pass the
+`nzblnk://` URI to `-n`. gimme shells out to the `nzbgo` CLI, reads the
+`The NZB file was saved as '<path>'` line from its output, and feeds that file to
+the normal pipeline (so `{{password}}` detection and release naming still apply):
+
+```sh
+./gimme -n "nzblnk:?t=Totally.Legal.Cinema.1994.1080p&h=n0tAr3aLhAsHNotARealHeader&p=hunter2&g=alt.binaries.warez&d=01.01.2000" -o ~/Downloads/
+```
+
+nzbgo only saves the `.nzb` (and prints its path) when its `target` is
+`"EXECUTE"`; otherwise it hands the file to SABnzbd/NZBGet/etc. and there is
+nothing for gimme to grab. Rather than require you to keep your default config on
+`EXECUTE`, gimme builds a **dedicated throwaway config** from your default one —
+force-setting only `target = "EXECUTE"` inside `[GENERAL]` and preserving every
+other byte (index API keys, the `[EXECUTE]` save directory, search engines, …) —
+and passes it to nzbgo as `--config`. Your real config is never modified and the
+copy is deleted as soon as nzbgo exits.
+
+By default gimme reads your nzbgo default config (`~/.config/nzb-monkey-go.conf`
+on Linux, `config.txt` beside the binary on macOS). Override that base with
+`-nzbgo-config /path/to/other.conf` (it is still patched to `EXECUTE`), and point
+at a non-`PATH` binary with `-nzbgo /path/to/nzbgo`. If you pass both `-f` and
+`-n`, `-f` wins.
+
 
 ### Examples
 

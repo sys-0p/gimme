@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -55,8 +57,14 @@ func run() int {
 		dryRun      bool
 		check       bool
 		noPreflight bool
+		nzblnk      string
+		nzbgoBin    string
+		nzbgoCfg    string
 	)
-	flag.StringVar(&flg, "f", "", "path to .nzb file (required)")
+	flag.StringVar(&flg, "f", "", "path to .nzb file (required unless -n)")
+	flag.StringVar(&nzblnk, "n", "", "NZBLNK URI - resolves it via the nzbgo CLI into an .nzb file, then leeches it (alternative to -f)")
+	flag.StringVar(&nzbgoBin, "nzbgo", "nzbgo", "path to the nzbgo binary (used with -n)")
+	flag.StringVar(&nzbgoCfg, "nzbgo-config", "", "base nzbgo config to copy and force target=EXECUTE (used with -n; default: nzbgo's own config)")
 	flag.StringVar(&out, "o", "", "output directory for the final file (named after the NZB) (required)")
 	flag.StringVar(&cfgPath, "c", defaultConfigPath(), "path to config.yaml (default ~/.config/gimme/config.yaml)")
 	flag.StringVar(&prov, "s", "", "override provider name from config")
@@ -73,10 +81,10 @@ func run() int {
 	flag.Usage = usage
 	flag.Parse()
 
-	// -f is needed for anything that reads an NZB (i.e. not -check); -o is only
-	// needed when we actually write output (not -dry-run / -check).
-	if !check && flg == "" {
-		fmt.Fprintln(os.Stderr, "error: -f is required (unless -check)")
+	// -f (or -n) is needed for anything that reads an NZB (i.e. not -check); -o
+	// is only needed when we actually write output (not -dry-run / -check).
+	if !check && flg == "" && nzblnk == "" {
+		fmt.Fprintln(os.Stderr, "error: -f (or -n) is required (unless -check)")
 		fmt.Fprintln(os.Stderr)
 		usage()
 		return exitUsage
@@ -133,6 +141,21 @@ func run() int {
 	// First output line: confirm which config was actually loaded (the default is
 	// ~/.config/gimme/config.yaml unless -c overrides it) and its schema version.
 	u.Linef(ui.StyleInfo, "Config", "Read config from '%s', version:%d", cfgPath, cfg.Version)
+
+	// -n: resolve an NZBLNK URI into a concrete .nzb path via the nzbgo CLI, then
+	// continue exactly as if -f had pointed at that file (so password detection,
+	// naming, and the whole pipeline are unchanged). nzbgo only writes the file when
+	// its target is "EXECUTE", so resolveNZBLnk derives a throwaway config from your
+	// default (or -nzbgo-config) with target forced to "EXECUTE" and passes it as
+	// --config; every other setting (API keys, save dir) is preserved.
+	if flg == "" && nzblnk != "" {
+		resolved, err := resolveNZBLnk(u, nzbgoBin, nzbgoCfg, nzblnk)
+		if err != nil {
+			u.Linef(ui.StyleError, "Error", "nzbgo: %v", err)
+			return exitError
+		}
+		flg = resolved
+	}
 
 	// Resolve the RAR password: an explicit -p wins; otherwise use one embedded
 	// in the NZB filename via the scene "…{{password}}.nzb" convention. The
@@ -343,6 +366,18 @@ func unpack(work, outDir, rarPw, releaseName string, u *ui.UI, prog *ui.Progress
 	if err != nil {
 		return "", err
 	}
+	// Safety net: passthrough keeps only ONE file, so if the release held several
+	// substantial data files (e.g. an archive gimme didn't recognize, or split
+	// chunks) the others are silently dropped and the output is incomplete. Warn
+	// loudly rather than hand back a truncated file without a word.
+	if others, otherBytes := siblingDataFiles(work, src); len(others) > 0 && otherBytes > 64<<20 {
+		u.Linef(ui.StyleWarn, "Warning", "no archive detected, but %d other data file(s) totalling %s were NOT unpacked",
+			len(others), ui.Human(otherBytes))
+		for _, o := range others {
+			u.Printf("      skipped %s", filepath.Base(o))
+		}
+		u.Printf("      the output is likely INCOMPLETE (only the largest file was kept).")
+	}
 	destName := filepath.Base(src)
 	if releaseName != "" {
 		destName = releaseName + filepath.Ext(src)
@@ -414,6 +449,36 @@ func largestDataFile(dir string) (string, error) {
 		return "", fmt.Errorf("no data files to output")
 	}
 	return best, nil
+}
+
+// siblingDataFiles returns the non-par2/nzb data files in dir other than chosen,
+// plus their combined size. unpack uses it to warn when passthrough would drop
+// substantial payload files (which would make the output incomplete).
+func siblingDataFiles(dir, chosen string) (others []string, bytes int64) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, 0
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if p == chosen {
+			continue
+		}
+		lower := strings.ToLower(e.Name())
+		if strings.HasSuffix(lower, ".par2") || strings.HasSuffix(lower, ".nzb") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		others = append(others, p)
+		bytes += info.Size()
+	}
+	return others, bytes
 }
 
 func countSegs(doc *nzb.NZB) int {
@@ -491,19 +556,204 @@ func passwordFromName(path string) (string, bool) {
 	return pw, true
 }
 
+// savedNZBRe matches the line nzbgo prints when it saves an NZB, e.g.:
+//
+//	SUCCESS:  The NZB file was saved as '/tmp/nzb/Release{{pw}}.nzb'
+//
+// It captures the path between the single quotes (which must end in .nzb).
+var savedNZBRe = regexp.MustCompile(`saved as\s+'([^']+\.nzb)'`)
+
+// parseSavedNZB extracts the NZB path nzbgo reported in its combined output. It
+// returns ok=false when no saved-file line is present (e.g. no results found or
+// nzbgo printed something unexpected), letting the caller surface the raw output.
+func parseSavedNZB(out string) (string, bool) {
+	m := savedNZBRe.FindStringSubmatch(out)
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
+
+// nzbgoConfigCandidates returns the places nzbgo looks for its config by default:
+// the XDG/~/·config copy (Linux default) first, then config.txt beside the binary
+// (macOS/Windows default, so the directory the resolved nzbgo lives in).
+func nzbgoConfigCandidates(bin string) []string {
+	var cands []string
+	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
+		cands = append(cands, filepath.Join(x, "nzb-monkey-go.conf"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		cands = append(cands, filepath.Join(home, ".config", "nzb-monkey-go.conf"))
+	}
+	// config.txt next to the (possibly PATH-resolved) binary.
+	resolved := bin
+	if !strings.ContainsRune(bin, filepath.Separator) {
+		if p, err := exec.LookPath(bin); err == nil {
+			resolved = p
+		}
+	}
+	if abs, err := filepath.Abs(resolved); err == nil {
+		cands = append(cands, filepath.Join(filepath.Dir(abs), "config.txt"))
+	}
+	return cands
+}
+
+// findNzbgoConfig returns the first existing default nzbgo config path. ok=false
+// when none is found (caller then asks the user for -nzbgo-config).
+func findNzbgoConfig(bin string) (string, bool) {
+	for _, c := range nzbgoConfigCandidates(bin) {
+		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
+			return c, true
+		}
+	}
+	return "", false
+}
+
+// targetKeyRe matches an (indented) active `target =` assignment, case-insensitive.
+var targetKeyRe = regexp.MustCompile(`(?i)^([ \t]*)target[ \t]*=`)
+
+// forceExecuteTarget returns an nzbgo config whose ACTIVE (uncommented) `target`
+// key inside [GENERAL] is forced to "EXECUTE", leaving every other byte untouched
+// so API keys and the [EXECUTE] save directory survive. The commented example line
+// (`# target = "NZBGET"`) is left alone. If no active target line exists it is
+// inserted just after the [GENERAL] header; if there is no [GENERAL] section at
+// all, a minimal one is appended. Line endings (LF or CRLF) are preserved.
+func forceExecuteTarget(cfg []byte) []byte {
+	const patch = `target = "EXECUTE"`
+	lines := strings.SplitAfter(string(cfg), "\n") // keeps each "\n" (and any "\r")
+	var (
+		inGeneral   bool
+		patched     bool
+		insertAfter int = -1 // index of the [GENERAL] header line
+	)
+	for i, ln := range lines {
+		body := strings.TrimRight(ln, "\r\n")
+		trimmed := strings.TrimSpace(body)
+		if strings.HasPrefix(trimmed, "[") {
+			name := strings.TrimSpace(strings.TrimPrefix(trimmed, "["))
+			if j := strings.IndexByte(name, ']'); j >= 0 {
+				name = name[:j]
+			}
+			inGeneral = strings.EqualFold(strings.TrimSpace(name), "GENERAL")
+			if inGeneral && insertAfter < 0 {
+				insertAfter = i
+			}
+			continue
+		}
+		if !inGeneral || patched {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue // keep the commented example target
+		}
+		if m := targetKeyRe.FindStringSubmatch(body); m != nil {
+			eol := ln[len(body):] // original line ending ("\r\n", "\n", or "")
+			lines[i] = m[1] + patch + eol
+			patched = true
+		}
+	}
+	if patched {
+		return []byte(strings.Join(lines, ""))
+	}
+	if insertAfter >= 0 {
+		body := strings.TrimRight(lines[insertAfter], "\r\n")
+		eol := lines[insertAfter][len(body):]
+		if eol == "" {
+			eol = "\n"
+		}
+		out := make([]string, 0, len(lines)+1)
+		out = append(out, lines[:insertAfter+1]...)
+		out = append(out, patch+eol)
+		out = append(out, lines[insertAfter+1:]...)
+		return []byte(strings.Join(out, ""))
+	}
+	// No [GENERAL] section at all: append a minimal one.
+	trimmed := strings.TrimRight(string(cfg), "\r\n")
+	return []byte(trimmed + "\n[GENERAL]\n" + patch + "\n")
+}
+
+// resolveNZBLnk runs the nzbgo CLI for an NZBLNK URI and returns the .nzb path it
+// saved. nzbgo only writes (and prints) the file when target = "EXECUTE"; to make
+// that work regardless of the user's default target, gimme builds a dedicated
+// throwaway config from a base (cfgPath if given, else nzbgo's own default),
+// forces target = "EXECUTE" into [GENERAL] while keeping every other setting, and
+// passes it via --config. stdout+stderr are combined since nzbgo mixes them.
+func resolveNZBLnk(u *ui.UI, bin, cfgPath, link string) (string, error) {
+	base := cfgPath
+	if base == "" {
+		found, ok := findNzbgoConfig(bin)
+		if !ok {
+			return "", fmt.Errorf("could not find an nzbgo config to copy (tried %s); pass -nzbgo-config",
+				strings.Join(nzbgoConfigCandidates(bin), ", "))
+		}
+		base = found
+	}
+	raw, err := os.ReadFile(base)
+	if err != nil {
+		return "", fmt.Errorf("read nzbgo config %s: %w", base, err)
+	}
+
+	tmp, err := os.CreateTemp("", "gimme-nzbgo-*.conf")
+	if err != nil {
+		return "", fmt.Errorf("create temp nzbgo config: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	// 0600: the base config may contain index API keys, so keep the copy private.
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("chmod temp nzbgo config: %w", err)
+	}
+	if _, err := tmp.Write(forceExecuteTarget(raw)); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("write temp nzbgo config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("write temp nzbgo config: %w", err)
+	}
+
+	u.Linef(ui.StyleInfo, "nzbgo", "Resolving NZBLNK via %s (config %s, target forced to EXECUTE)", bin, base)
+	cmd := exec.Command(bin, "--config", tmpPath, link)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("run %s: %w\n%s", bin, err, strings.TrimSpace(buf.String()))
+	}
+	out := buf.String()
+	path, ok := parseSavedNZB(out)
+	if !ok {
+		return "", fmt.Errorf("no saved NZB in %s output (no results? bad NZBLNK?)\n%s",
+			bin, strings.TrimSpace(out))
+	}
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("%s reported %s but it is not readable: %w", bin, path, err)
+	}
+	u.Linef(ui.StyleSuccess, "nzbgo", "Resolved NZB: %s", path)
+	return path, nil
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, `gimme - minimal Usenet NZB leecher
 
 Usage:
   gimme -f <nzb> -o <output> [flags]
+  gimme -n <nzblnk> -o <output> [flags]
 
 Required:
-  -f  path to .nzb file
+  -f  path to .nzb file (or use -n to fetch one via nzbgo)
+  -n  NZBLNK URI - resolved into an .nzb via the nzbgo CLI, then leeched
   -o  output directory (final file is named after the .nzb filename)
 
 Options:
-  -c            path to config.yaml (default ~/.config/gimme/config.yaml)
-  -s            provider name to use/swap (overrides config default)
+  -c              path to config.yaml (default ~/.config/gimme/config.yaml)
+  -nzbgo          path to the nzbgo binary (used with -n, default "nzbgo")
+  -nzbgo-config   base nzbgo config to copy and force target = "EXECUTE" into
+                  (used with -n; default: nzbgo's own config). gimme writes a
+                  throwaway copy so nzbgo saves the .nzb and prints its path
+                  instead of sending it to SABnzbd/etc.; all other settings
+                  (index API keys, the [EXECUTE] save dir) are preserved.
+  -s              provider name to use/swap (overrides config default)
   -p            password for encrypted RAR archives
   -connections  override connections per provider (lower if account limits concurrency)
   -work         persistent work directory (default: $TMPDIR/gimme/<id>)

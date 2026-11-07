@@ -9,6 +9,97 @@ import (
 	"gimme/internal/ui"
 )
 
+func TestParseSavedNZB(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+		ok   bool
+	}{
+		{
+			name: "typical scene path (double-brace)",
+			in: `Searching on NZBKing ...
+   Found:    [01/19] - "x.par2" yEnc (1/1) (5.2 GB)
+   Saving the NZB file ...
+   SUCCESS:  The NZB file was saved as '/tmp/nzb/Totally.Legal.Cinema.1994.1080p-MyMom{{hunter2}}.nzb'
+   Ending program in 0 seconds .`,
+			want: "/tmp/nzb/Totally.Legal.Cinema.1994.1080p-MyMom{{hunter2}}.nzb", ok: true,
+		},
+		{
+			name: "no results",
+			in:   "Searching on NZBIndex ...\nWARNING:  No results found\n",
+			want: "", ok: false,
+		},
+		{
+			name: "not an nzb path ignored",
+			in:   "saved as '/tmp/foo.txt'\n",
+			want: "", ok: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseSavedNZB(tc.in)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("parseSavedNZB()=(%q,%v) want (%q,%v)", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestForceExecuteTarget(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "replaces active target, keeps comment and other keys",
+			in: "[GENERAL]\n" +
+				"# target = \"NZBGET\"\n" +
+				"target = \"SABNZBD\"\n" +
+				"cleanup = true\n" +
+				"\n" +
+				"[SABNZBD]\n" +
+				"api = secret-key-123\n",
+			want: "[GENERAL]\n" +
+				"# target = \"NZBGET\"\n" +
+				"target = \"EXECUTE\"\n" +
+				"cleanup = true\n" +
+				"\n" +
+				"[SABNZBD]\n" +
+				"api = secret-key-123\n",
+		},
+		{
+			name: "inserts after header when only commented target exists",
+			in:   "[GENERAL]\n# target = \"NZBGET\"\n\n[EXECUTE]\npath = /tmp/nzb\n",
+			want: "[GENERAL]\ntarget = \"EXECUTE\"\n# target = \"NZBGET\"\n\n[EXECUTE]\npath = /tmp/nzb\n",
+		},
+		{
+			name: "case-insensitive section and preserves indentation",
+			in:   "[General]\n    target = \"NZBGET\"\n",
+			want: "[General]\n    target = \"EXECUTE\"\n",
+		},
+		{
+			name: "appends [GENERAL] when missing",
+			in:   "[SABNZBD]\napi = x\n",
+			want: "[SABNZBD]\napi = x\n[GENERAL]\ntarget = \"EXECUTE\"\n",
+		},
+		{
+			name: "preserves CRLF line endings",
+			in:   "[GENERAL]\r\ntarget = \"SABNZBD\"\r\n",
+			want: "[GENERAL]\r\ntarget = \"EXECUTE\"\r\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(forceExecuteTarget([]byte(tc.in)))
+			if got != tc.want {
+				t.Fatalf("forceExecuteTarget()\n got %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestStableCacheDir(t *testing.T) {
 	a := stableCacheDir("/x/Release.One.nzb")
 	b := stableCacheDir("/y/Release.Two.nzb")
