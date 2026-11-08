@@ -21,9 +21,9 @@ func TestParseSavedNZB(t *testing.T) {
 			in: `Searching on NZBKing ...
    Found:    [01/19] - "x.par2" yEnc (1/1) (5.2 GB)
    Saving the NZB file ...
-   SUCCESS:  The NZB file was saved as '/tmp/nzb/Totally.Legal.Cinema.1994.1080p-MyMom{{hunter2}}.nzb'
+   SUCCESS:  The NZB file was saved as '/tmp/nzb/Sir.Squeaks-a-Lot.2019.1080p-QUACKS{{hunter2}}.nzb'
    Ending program in 0 seconds .`,
-			want: "/tmp/nzb/Totally.Legal.Cinema.1994.1080p-MyMom{{hunter2}}.nzb", ok: true,
+			want: "/tmp/nzb/Sir.Squeaks-a-Lot.2019.1080p-QUACKS{{hunter2}}.nzb", ok: true,
 		},
 		{
 			name: "no results",
@@ -100,6 +100,27 @@ func TestForceExecuteTarget(t *testing.T) {
 	}
 }
 
+func TestDirSize(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a"), make([]byte, 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "b"), make([]byte, 250), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := dirSize(dir); got != 350 {
+		t.Fatalf("dirSize = %d want 350", got)
+	}
+	// A missing directory must yield 0 rather than crash the startup line.
+	if got := dirSize(filepath.Join(dir, "nope")); got != 0 {
+		t.Fatalf("dirSize(missing) = %d want 0", got)
+	}
+}
+
 func TestStableCacheDir(t *testing.T) {
 	a := stableCacheDir("/x/Release.One.nzb")
 	b := stableCacheDir("/y/Release.Two.nzb")
@@ -129,33 +150,33 @@ func TestPasswordFromName(t *testing.T) {
 		ok   bool
 	}{
 		{
-			name: "double-brace from user example (escaped form)",
-			in:   `CR.WEB.H264-DRiFTKiNG\{\{HtO65TYLYUOARuNPCUk0ALjXmTJxzq\}\}.nzb`,
-			want: "HtO65TYLYUOARuNPCUk0ALjXmTJxzq", ok: true,
+			name: "double-brace escaped form (braces escaped by the shell)",
+			in:   `Sir.Squeaks.H264-QUACKS\{\{FurryLegsFourInches\}\}.nzb`,
+			want: "FurryLegsFourInches", ok: true,
 		},
 		{
 			name: "double-brace plain",
-			in:   "Some.Release.1080p-GRP{{HtO65TYLYUOARuNPCUk0ALjXmTJxzq}}.nzb",
-			want: "HtO65TYLYUOARuNPCUk0ALjXmTJxzq", ok: true,
+			in:   "Grumpy.Cat.1080p-HONK{{correctHorse}}.nzb",
+			want: "correctHorse", ok: true,
 		},
 		{
 			name: "single brace",
-			in:   "Release.{secret123}.nzb",
-			want: "secret123", ok: true,
+			in:   "Goose.Get.Gravy.{lunchbox}.nzb",
+			want: "lunchbox", ok: true,
 		},
 		{
 			name: "last group wins",
-			in:   "Release.{first}extra{{thelast}}.nzb",
-			want: "thelast", ok: true,
+			in:   "Wibble.{wibble}wobble{{wubble}}.nzb",
+			want: "wubble", ok: true,
 		},
 		{
 			name: "with directories",
-			in:   "/home/dl/nzbs/Movie.2024{{abcXYZ}}.nzb",
-			want: "abcXYZ", ok: true,
+			in:   "/home/dl/nzbs/Quackers.1987{{DoubleQuacks}}.nzb",
+			want: "DoubleQuacks", ok: true,
 		},
 		{
 			name: "no braces",
-			in:   "Ordinary.Release.1080p.nzb",
+			in:   "Plain.Ol.Sandwich.1080p.nzb",
 			want: "", ok: false,
 		},
 	}
@@ -207,7 +228,7 @@ func TestUnpackPassthroughWhenNoRar(t *testing.T) {
 
 func TestReleaseNameFromName(t *testing.T) {
 	cases := map[string]string{
-		`Reborn.S01E01.German.DL.1080p.CR.WEB.H264-DRiFTKiNG\{\{HtO65TY\}\}.nzb`: "Reborn.S01E01.German.DL.1080p.CR.WEB.H264-DRiFTKiNG",
+		`Sir.Squeaks.S01E01.German.DL.1080p.CR.WEB.H264-QUACKS\{\{hunter2\}\}.nzb`: "Sir.Squeaks.S01E01.German.DL.1080p.CR.WEB.H264-QUACKS",
 		`/dir/Movie.2024{{pw}}.nzb`: "Movie.2024",
 		`Movie.2024.nzb`:            "Movie.2024",
 		`Movie.{single}.nzb`:        "Movie",
@@ -224,7 +245,7 @@ func TestReleaseNameFromName(t *testing.T) {
 
 func TestRenameToReleasePreservesExtension(t *testing.T) {
 	dir := t.TempDir()
-	p := filepath.Join(dir, "VzNi2PVxQ8OUQrZelsvTio0jyZJzYJ.mkv")
+	p := filepath.Join(dir, "DuckyLandsAtDawn.mkv")
 	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}

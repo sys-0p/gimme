@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -37,6 +38,9 @@ const (
 	exitTooCorrupt = 3
 )
 
+// version is the gimme release shown in the startup banner.
+const version = "0.1.2"
+
 func main() {
 	os.Exit(run())
 }
@@ -52,6 +56,7 @@ func run() int {
 		cache       string
 		conns       int
 		keep        bool
+		keepCache   bool
 		verbose     bool
 		quiet       bool
 		dryRun      bool
@@ -65,14 +70,15 @@ func run() int {
 	flag.StringVar(&nzblnk, "n", "", "NZBLNK URI - resolves it via the nzbgo CLI into an .nzb file, then leeches it (alternative to -f)")
 	flag.StringVar(&nzbgoBin, "nzbgo", "nzbgo", "path to the nzbgo binary (used with -n)")
 	flag.StringVar(&nzbgoCfg, "nzbgo-config", "", "base nzbgo config to copy and force target=EXECUTE (used with -n; default: nzbgo's own config)")
-	flag.StringVar(&out, "o", "", "output directory for the final file (named after the NZB) (required)")
+	flag.StringVar(&out, "o", "", "output directory; the result is named after the .nzb (required)")
 	flag.StringVar(&cfgPath, "c", defaultConfigPath(), "path to config.yaml (default ~/.config/gimme/config.yaml)")
 	flag.StringVar(&prov, "s", "", "override provider name from config")
 	flag.StringVar(&rarPw, "p", "", "password for encrypted RAR archives")
 	flag.StringVar(&work, "work", "", "persistent work directory (default: $TMPDIR/gimme/<id>)")
-	flag.StringVar(&cache, "cache", "", "segment cache dir for resume (default: <work>/.segments, else OS cache dir)")
+	flag.StringVar(&cache, "cache", "", "segment cache dir for resume (default: <work>/.segments, else OS cache dir; deleted on success unless -keep-cache)")
 	flag.IntVar(&conns, "connections", 0, "override connections per provider (e.g. if the account limits concurrency)")
-	flag.BoolVar(&keep, "keep", false, "keep the work directory after completion")
+	flag.BoolVar(&keep, "keep", false, "keep the (auto temp) work directory after completion")
+	flag.BoolVar(&keepCache, "keep-cache", false, "retain the segment cache after the run so the release can be reprocessed/retried without re-downloading (by default the cache is deleted on success, leaving nothing behind)")
 	flag.BoolVar(&verbose, "v", false, "verbose logging")
 	flag.BoolVar(&quiet, "q", false, "suppress progress output")
 	flag.BoolVar(&dryRun, "dry-run", false, "parse NZB + config and exit (no network)")
@@ -138,9 +144,17 @@ func run() int {
 	verb := !quiet && (verbose || cfg.Defaults.Verbose)
 	u := ui.New(verb, quiet)
 	u.Logo()
-	// First output line: confirm which config was actually loaded (the default is
+	u.Linef(ui.StyleInfo, "Version", "Gimme v%s", version)
+	// First stage line: confirm which config was actually loaded (the default is
 	// ~/.config/gimme/config.yaml unless -c overrides it) and its schema version.
 	u.Linef(ui.StyleInfo, "Config", "Read config from '%s', version:%d", cfgPath, cfg.Version)
+	// Show how much disk the persistent segment cache (OS cache dir / gimme) holds,
+	// so it is obvious how much is already downloaded and available to resume. The
+	// recursive walk is skipped under -quiet (where the line would not print anyway).
+	if !quiet {
+		cdir := gimmeCacheDir()
+		u.Linef(ui.StyleInfo, "Cache", "Current cache %s size %s", cdir, ui.Human(dirSize(cdir)))
+	}
 
 	// -n: resolve an NZBLNK URI into a concrete .nzb path via the nzbgo CLI, then
 	// continue exactly as if -f had pointed at that file (so password detection,
@@ -215,9 +229,10 @@ func run() int {
 		return exitOK
 	}
 
-	// Work directory. An explicitly passed -work is persistent (kept across
-	// runs) so re-runs resume from the segment cache; only an auto-created temp
-	// dir is removed on success.
+	// Work directory. An explicitly passed -work is persistent (kept across runs)
+	// so re-runs can reprocess without re-fetching; only an auto-created temp dir
+	// is disposable.
+	explicitWork := work != ""
 	autoWork := false
 	if work == "" {
 		// Deterministic temp dir (not a random name) so it is easy to find,
@@ -231,9 +246,9 @@ func run() int {
 		return exitError
 	}
 	// Default cache location. With an explicit -work the cache lives beside the
-	// (kept) downloads. With the default auto temp dir the cache must live in a
-	// stable place, or resume would be impossible once that throwaway dir is
-	// gone — this is why re-running without -work previously never resumed.
+	// (kept) downloads. With the default auto temp dir the cache lives in a
+	// stable OS cache dir so an interrupted run can still resume.
+	explicitCache := cache != ""
 	autoCache := false
 	if cache == "" {
 		if autoWork {
@@ -243,21 +258,29 @@ func run() int {
 			cache = filepath.Join(work, ".segments", nzbID(flg))
 		}
 	}
-	// Cleanup. An explicit -work is always kept; an auto temp dir is removed on
-	// a fully successful run. The segment cache is kept whenever a run did NOT
-	// fully succeed so a re-run resumes without re-downloading; the cache we
-	// auto-created in a stable location is dropped on success so it lingers.
-	var ok bool
+	// Retention. By default NOTHING survives the run: the auto temp work dir and
+	// the segment cache are both removed, leaving no residue behind. Artifacts are
+	// kept only on explicit demand — -keep (work dir), -keep-cache (segments, so
+	// the release can be reprocessed/retried without re-downloading), or an
+	// explicit -work/-cache path the user named (we never delete what they pointed
+	// us at). This makes the "5 GiB of cached segments left in ~/Library/Caches"
+	// surprise impossible unless you asked for it.
+	retain := keepCache || keep || explicitWork || explicitCache
 	removeWork := autoWork && !keep
 	defer func() {
 		if removeWork {
 			os.RemoveAll(work)
 		}
-		if ok && autoCache && !keep {
-			os.RemoveAll(cache)
+		if retain {
+			u.Linef(ui.StyleInfo, "Resume", "cache %s kept — re-run the same command to resume/reprocess without re-downloading", cache)
 			return
 		}
-		u.Linef(ui.StyleInfo, "Resume", "work %s · cache %s (re-run the same command to resume)", work, cache)
+		// autoCache is the only cache dir we auto-created, so it is the only one
+		// safe to delete here (explicit -cache dirs are never touched).
+		if autoCache {
+			os.RemoveAll(cache)
+			u.Linef(ui.StyleInfo, "Cleanup", "removed cache %s (pass -keep-cache to retain it for a re-run)", cache)
+		}
 	}()
 
 	// Preflight: authenticate once per provider to fail fast on bad creds.
@@ -303,9 +326,12 @@ func run() int {
 	}
 	switch rep.Status {
 	case repair.StatusTooCorrupt:
-		// Keep the raw downloads + segment cache so a re-run can retry the
-		// stitch/repair step without re-fetching anything.
-		removeWork = false
+		// When the user asked to keep artifacts, retain the raw downloads so a
+		// re-run can retry the stitch/repair step without re-fetching; otherwise
+		// the default cleanup removes work + cache (retry needs -keep-cache).
+		if retain {
+			removeWork = false
+		}
 		u.Linef(ui.StyleError, "Repair", "TOO CORRUPT to repair - %s", rep.Detail)
 		if res.TotalSegs < 100 {
 			u.Printf("hint: this NZB has only %d segment(s) — it looks incomplete", res.TotalSegs)
@@ -314,8 +340,8 @@ func run() int {
 		} else {
 			u.Printf("hint: all %d segments arrived, but PAR2 lacks enough parity to", res.TotalSegs)
 			u.Printf("      rebuild the rest — some articles may be gone from the server.")
-			u.Printf("      Re-run the same command to retry without re-downloading")
-			u.Printf("      (the segment cache is kept), or try a backup provider via -s.")
+			u.Printf("      Re-run with -keep-cache (or -work) to retry the stitch")
+			u.Printf("      without re-downloading, or try a backup provider via -s.")
 		}
 		return exitTooCorrupt
 	case repair.StatusRepaired:
@@ -332,7 +358,6 @@ func run() int {
 		u.Linef(ui.StyleError, "Error", "unpack: %v", err)
 		return exitError
 	}
-	ok = true
 	u.Linef(ui.StyleSuccess, "Done", "output at %s", finalPath)
 	return exitOK
 }
@@ -407,7 +432,7 @@ func renameToRelease(path, releaseName string) (string, error) {
 // the base name minus ".nzb" and minus the trailing "{{password}}" scene
 // suffix (everything from the first '{' onward), with dangling separators gone.
 //
-//	Reborn....DRiFTKiNG{{pw}}.nzb -> Reborn....DRiFTKiNG
+//	Sir.Squeaks.2019-QUACKS{{pw}}.nzb -> Sir.Squeaks.2019-QUACKS
 func releaseNameFromName(path string) string {
 	base := filepath.Base(path)
 	if len(base) >= 4 && strings.EqualFold(base[len(base)-4:], ".nzb") {
@@ -528,6 +553,33 @@ func stableCacheDir(nzbPath string) string {
 		return filepath.Join(base, "gimme", id)
 	}
 	return filepath.Join(filepath.Dir(nzbPath), ".gimme-cache", id)
+}
+
+// gimmeCacheDir is the root that holds the per-release segment caches in the OS
+// user cache dir (~/Library/Caches/gimme on macOS, ~/.cache/gimme on Linux). It
+// is the parent of stableCacheDir, shown in the startup [ Cache ] line.
+func gimmeCacheDir() string {
+	if base, err := os.UserCacheDir(); err == nil && base != "" {
+		return filepath.Join(base, "gimme")
+	}
+	return ".gimme-cache"
+}
+
+// dirSize sums the size of every regular file under root, recursively. Any error
+// (missing dir, permission denied) is swallowed and treated as zero so the
+// startup cache line can never break a run.
+func dirSize(root string) int64 {
+	var total int64
+	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, err := d.Info(); err == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
 }
 
 // namePwRe matches a brace group: one-or-more '{', inner content (no braces),
@@ -743,7 +795,7 @@ Usage:
 Required:
   -f  path to .nzb file (or use -n to fetch one via nzbgo)
   -n  NZBLNK URI - resolved into an .nzb via the nzbgo CLI, then leeched
-  -o  output directory (final file is named after the .nzb filename)
+  -o  output directory; the result is named after the .nzb (required)
 
 Options:
   -c              path to config.yaml (default ~/.config/gimme/config.yaml)
@@ -758,9 +810,11 @@ Options:
   -connections  override connections per provider (lower if account limits concurrency)
   -work         persistent work directory (default: $TMPDIR/gimme/<id>)
   -cache        segment cache dir (default: <work>/.segments, or the OS cache
-                dir when no -work is given; cached segments are reused on a
-                re-run so an interrupted/failed download resumes without refetch)
-  -keep         keep the work directory after completion
+                dir when no -work is given)
+  -keep-cache   retain the segment cache after the run, so the release can be
+                reprocessed/retried WITHOUT re-downloading. Off by default: an
+                auto cache is deleted when the run ends, leaving nothing behind.
+  -keep         keep the (auto temp) work directory after completion
   -check        only test provider authentication, then exit
   -no-preflight skip the single-connection auth preflight
   -v            verbose logging

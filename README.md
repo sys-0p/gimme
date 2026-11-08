@@ -4,59 +4,38 @@
   <img src="https://raw.githubusercontent.com/sys-0p/gimme/refs/heads/main/assets/gimme.jpg" />
 </p>
 
-A minimal NZB leecher for Usenet, in Go. Downloads stuff based on an `.nzb`, 
-**auto-repairs corruption with PAR2 while unpacking**, and writes
-the final decompressed file(s) to disk.
+A minimal Usenet NZB leecher. Point it at an `.nzb` (or an `nzblnk://` link): it
+downloads every segment, repairs damage with PAR2, unpacks RAR, and writes the
+finished file named after the release.
 
-```
-gimme -f <path_to_nzb> -o <output>
-```
-
-## Pipeline
-
-1. **Download** every segment across all providers, in parallel
-   (`connections` per provider). A segment that fails after retries is left as a
-   **gap** instead of aborting the whole download.
-2. **Repair** with PAR2: verify every file against the `.par2` recovery set and
-   reconstruct damaged/missing pieces automatically. If there isn't enough parity
-   to fix the gaps, it reports the output as **too corrupt** and stops (exit 3).
-3. **Unpack** RAR volumes (RAR3/RAR5, multi-volume, optional password) into the
-   output path. Releases without RAR fall back to passing through the main file.
-
-## Build
-
-Requires Go (the module targets `go 1.27.1`; with `GOTOOLCHAIN=auto` the right
-toolchain is fetched automatically on first build).
+## Quick start
 
 ```sh
-go build -o gimme ./cmd/gimme
-go test ./...
+./gimme -f release.nzb -o ~/Downloads
 ```
 
-## Configuration
+`-o` is an **output directory** (created if missing); the result is named after
+the `.nzb`. On first run gimme writes a config template to
+`~/.config/gimme/config.yaml` — add your provider, then re-run.
 
-gimme reads its config from `~/.config/gimme/config.yaml` by default (honouring
-`$XDG_CONFIG_HOME` if set); point it elsewhere with `-c`. If that file does not
-exist yet, the first run writes a commented default template there (and creates
-the `~/.config/gimme` directory), prints where it put it, and asks you to edit
-it — so you never hit a "no such file or directory" error. Edit the YAML, not the
-code — the file the run actually used is echoed as the first `[ Config ]` line.
+## Configure
+
+`~/.config/gimme/config.yaml` (override with `-c`):
 
 ```yaml
 version: 2
 defaults:
-  provider: main          # provider used unless -s overrides it
+  provider: main          # used unless -s picks another
   max_retries: 3          # retries per segment before leaving a gap
-  verbose: true
 providers:
   - name: main
     host: news.example.com
     port: 563
-    encryption: true      # true = implicit TLS (NNTPS), false = plaintext
+    encryption: true      # true = TLS (NNTPS)
     username: your-username
-    password: "${GIMME_PW_MAIN}"   # ${ENV_VAR} is expanded at load time
+    password: "${GIMME_PW_MAIN}"   # ${ENV} / $(ENV) expanded at load time
     connections: 8
-    priority: 1           # lower is tried first during failover
+    priority: 1           # lower tried first; failed articles fail over to the next
   - name: backup
     host: news2.example.com
     port: 563
@@ -67,239 +46,85 @@ providers:
     priority: 2
 ```
 
-- **Failover:** if the active provider can't fetch an article (or the article
-  isn't present on it), the next provider by `priority` is tried.
-- **Swapping providers on the CLI:** `-s backup` runs using only the provider
-  named `backup` (defined in the YAML).
-
 ## Usage
 
 ```
-gimme -f <nzb> -o <output> [flags]
-gimme -n <nzblnk> -o <output> [flags]
+gimme -f <nzb> -o <dir> [flags]
+gimme -n <nzblnk> -o <dir> [flags]
 
-  -f        path to .nzb file         (required unless -n is used)
-  -n        NZBLNK URI - resolves it into an .nzb via the nzbgo CLI, then leeches
-            it (alternative to -f; see "Resolving NZBLNK via nzbgo" below)
-  -o        output directory for the final file (required)
-  -c        path to config.yaml          (default ~/.config/gimme/config.yaml)
-  -nzbgo    path to the nzbgo binary     (used with -n, default "nzbgo")
-  -nzbgo-config  base nzbgo config to copy & force target=EXECUTE (used with -n)
-  -s        provider name to use/swap    (overrides config default)
-  -p        password for encrypted RAR archives
-  -work     persistent work directory  (default: $TMPDIR/gimme/<id>)
-  -cache    segment cache dir          (default: <work>/.segments, or OS cache dir)
-  -keep     keep the (auto temp) work directory after completion
-  -v        verbose logging
-  -q        quiet (no progress bar or logs)
-  -dry-run  parse NZB + config and exit without downloading
+  -f            path to .nzb                        (required unless -n)
+  -n            nzblnk:// URI, resolved via the nzbgo CLI (alternative to -f)
+  -o            output directory; result named after the .nzb   (required)
+  -c            config.yaml             (default ~/.config/gimme/config.yaml)
+  -s            provider name to use    (overrides the config default)
+  -p            password for encrypted RAR archives
+  -connections  override connections per provider
+  -work         persistent work dir     (default $TMPDIR/gimme/<id>)
+  -cache        segment cache dir       (default OS cache dir)
+  -keep-cache   keep the cache after the run, to reprocess without re-downloading
+  -keep         keep the work dir after the run
+  -check        test provider auth and exit
+  -no-preflight skip the single-connection auth preflight
+  -dry-run      parse NZB + config, no download
+  -v / -q       verbose / quiet
+  -nzbgo        path to the nzbgo binary                          (with -n)
+  -nzbgo-config base nzbgo config to copy + force target=EXECUTE  (with -n)
 ```
-
-### Resolving NZBLNK via nzbgo
-
-Instead of running `nzbgo` by hand and pasting the saved path into `-f`, pass the
-`nzblnk://` URI to `-n`. gimme shells out to the `nzbgo` CLI, reads the
-`The NZB file was saved as '<path>'` line from its output, and feeds that file to
-the normal pipeline (so `{{password}}` detection and release naming still apply):
 
 ```sh
-./gimme -n "nzblnk:?t=ds=01.01.2000" -o ~/Downloads/
+./gimme -f release.nzb -o ~/Downloads                  # default provider
+./gimme -f release.nzb -o out -s backup -p 'rar-pw'    # backup provider, locked RAR
+./gimme -n "nzblnk:?t=Movie.2024&h=AbCdEf&p=hunter2&g=alt.binaries.warez&d=01.01.2000" -o ~/Downloads
 ```
 
-nzbgo only saves the `.nzb` (and prints its path) when its `target` is
-`"EXECUTE"`; otherwise it hands the file to SABnzbd/NZBGet/etc. and there is
-nothing for gimme to grab. Rather than require you to keep your default config on
-`EXECUTE`, gimme builds a **dedicated throwaway config** from your default one —
-force-setting only `target = "EXECUTE"` inside `[GENERAL]` and preserving every
-other byte (index API keys, the `[EXECUTE]` save directory, search engines, …) —
-and passes it to nzbgo as `--config`. Your real config is never modified and the
-copy is deleted as soon as nzbgo exits.
+If the `.nzb` is named `Release{{password}}.nzb`, gimme reads the RAR password
+from the name when you don't pass `-p`.
 
-By default gimme reads your nzbgo default config (`~/.config/nzb-monkey-go.conf`
-on Linux, `config.txt` beside the binary on macOS). Override that base with
-`-nzbgo-config /path/to/other.conf` (it is still patched to `EXECUTE`), and point
-at a non-`PATH` binary with `-nzbgo /path/to/nzbgo`. If you pass both `-f` and
-`-n`, `-f` wins.
+## nzblnk:// links
 
+With `-n`, gimme runs the [nzbgo](https://github.com/Tensai75/nzb-monkey-go) CLI
+for you, grabs the `.nzb` it saves, and leeches it. nzbgo only saves the file
+when its `target = "EXECUTE"`; gimme makes that happen by copying your nzbgo
+config into a throwaway with `target` forced to `EXECUTE` and passing it as
+`--config`, so your real config is never touched. By default it uses nzbgo's own
+config (`~/.config/nzb-monkey-go.conf`, or `config.txt` beside the binary on
+macOS); override with `-nzbgo-config`.
 
-### Examples
+## Resume & cleanup
+
+By default gimme leaves **nothing** behind: when a run ends the segment cache is
+deleted, so you never end up with gigabytes of half-used `.rar` segments sitting
+in `~/Library/Caches/gimme`.
+
+To resume or reprocess **without re-downloading**, ask for it explicitly:
+
+- `-keep-cache` retains the segment cache after the run. Re-run the same command
+  and only missing segments are fetched; the rest are stitched from cache.
+- `-work DIR` keeps the whole work dir (downloads + cache) beside `DIR`.
+- An explicit `-cache DIR` is also kept — gimme never deletes a directory you
+  named yourself.
+
+An interrupted run (Ctrl-C, failure) keeps its cache only under those flags;
+otherwise everything is cleaned up. The startup line
+`[ Cache ] Current cache <path> size <x>` shows how much is already on disk.
+
+## Exit codes
+
+| code | meaning |
+|-----:|---------|
+| 0    | success |
+| 1    | error (config / network / unpack) |
+| 2    | usage error |
+| 3    | too corrupt to repair — not enough PAR2 to rebuild the gaps |
+
+Any non-zero exit also prints a `[ Error ]` or `[ Repair ]` line explaining what
+went wrong (for exit 3: how many segments are unrecoverable and how to retry).
+
+## Build
+
+Needs Go (module targets `go 1.27.1`; `GOTOOLCHAIN=auto` fetches it on first build).
 
 ```sh
-# Fetch and unpack using the default provider
-GIMME_PW_MAIN=hunter2 ./gimme -f release.nzb -o ~/Downloads/release
-
-# Use the backup provider, RAR is password protected, keep the work dir
-./gimme -f release.nzb -o out -s backup -p 'rar-password' -keep -v
+go build -o gimme ./cmd/gimme
+go test ./...
 ```
-
-### Output
-
-gimme prints aligned `[Stage]` sections to stderr and a single live
-`[ Download ]`/`[ Extract ]` progress line (with the segment matrix beneath it)
-to stdout. The in-place line needs a terminal; when output is piped (or `-q` is
-used) it is omitted and only the plain summary sections remain. Stages are
-printed in pipeline order (tags are centered in a fixed-width column sized to the
-longest stage name — `Connection` — so every stage lines up and none is padded):
-
-```
-[  Config  ] Read config from '~/.config/gimme/config.yaml', version:2
-[   NZB    ] Files: 14, Segments: 9280
-[ Password ] Detected: superPassWord(from filename)
-[Connection] me@news.tweaknews.eu  Port: 563, TLS: on
-[ Download ] [================>       ]  63%  3.7 GiB  19.7 MiB/s  17s
-[m0001-1170] ██████████████████🬝🬎🬆🬂█🬬🬄🬂·████🬎🬆···················…
-[m1171-2340] ██████🬂█🬄█🬆····················…   ← █ done · · not yet fetched
-[ Download ] Segments: 9280/9280, Failed: 0, Retries: 3
-[ Download ] Size: 5.9 GiB, Time: 5m12.3s, Avg: 19.7 MiB/s
-[ Download ] Provider main: 9280 segs, 6.1 GiB
-[  Repair  ] all files verified complete
-[  Unpack  ] RAR set from Cool/release.part1.rar
-[ Extract  ] [====>                   ]  2.1 GiB  240 MiB/s  9s
-[m0001-1170] ████████████████████████████████████████████…
-[   Done   ] output at out/…paranoid-deineOma!.mkv
-```
-
-The download phase is a **single** aggregate line (`percent · bytes · rate ·
-elapsed`) rather than one meter per connection — with dozens of connections the
-per-connection meters just added noise, and the segment matrix below already
-conveys overall activity at a glance. The `[Download]` block then summarizes
-segment accounting, timing, cache-resume and per-provider usage. If a run fails
-partway, a red `[ Error ]` line is printed and a `[ Resume ]` line reports the
-work/segment-cache directories to re-run against.
-
-Colour carries meaning, not decoration: the stage tag is always bold cyan, the
-text of routine steps (Config, NZB, Connection, Download, Repair…) is plain, the
-single terminal success (`Done`, or `Auth` under `-check`) is **green**, a
-`Warning` is **yellow**, and failures (`Error`, a too-corrupt `Repair`) are
-**red**. Earlier every "OK" line was painted green, which highlighted nothing —
-now exactly one line goes green per successful run.
-
-**The segment matrix stays on screen for the whole run.** Each cell is one
-downloaded message (a Usenet article) — or, on very large files, a small equal
-group of messages so the whole set still fits in up to 8 rows; the block flows
-left-to-right and wraps. Each matrix row is prefixed with a faint `[mlo-hi]` tag
-naming the 1-based message numbers it shows (e.g. `[m0001-1170]`), so a row can be
-read against a range instead of just position. A message lands all at once, so there is no fractional
-"percent within a segment" to fake: an unfetched cell is a faint dot (`·`), and each
-message that lands adds exactly **one cube** to its cell, densifying it up to a solid
-block (`█`) once every message in that cell has arrived. The exact braille shape a
-cell densifies through is a per-cell **fill path** (so neighbours differ visually),
-assigned at random and fixed for the run — only the *density* carries meaning, so a
-denser cell always means more messages landed and a cell can never flicker back (this
-replaces the old random shimmer, which made it impossible to tell progress from
-noise). Partial, full and empty cells all render at the *same dim intensity*, so
-filling reads purely as the shape densifying, never a sudden brighten. And because a
-real landing is just an instant `0→1`, the renderer adds a little **magic**: rather
-than snapping from a dot to a block, a landing densifies along the cell's path over
-about a second, so each arriving message visibly fills in. This is purely cosmetic —
-the stored state is still that instant transition — so the matrix keeps the crisp,
-meaningful fill contract while looking alive as it downloads. When the download line
-finishes it drops away and the matrix remains while PAR2 verifies and the archive
-unpacks. Any message that couldn't be fetched (a gap PAR2 may repair)
-lights up in light red throughout, so damage is visible at a glance instead of buried
-in a counter. At the end the finished matrix is left on screen.
-
-
-
-
-
-### Password embedded in the NZB filename
-
-Scene releases often append the RAR password to the name as `…{{password}}.nzb`.
-If present and you did **not** pass `-p`, gimme extracts it automatically and
-logs the source:
-
-```sh
-./gimme -f 'CR.WEB.H264-DRiFTKiNG{{superPassWord}}.nzb' -o out
-# [ Password  ] Detected: superPassWord (from filename)
-```
-
-Precedence: explicit `-p` > filename-embedded `{{…}}`. Plain `{password}` and
-backslash-escaped forms are also handled; the last brace group in the name wins.
-
-### Output naming
-
-`-o` is treated as an **output directory** (created if missing). The final file
-is named after the NZB file — everything before the `.nzb` extension and the
-`{{password}}` suffix — keeping the payload's real extension:
-
-```sh
-./gimme -f '.…CR.WEB.H264-DRiFTKiNG{{superPas…}}.nzb' -o Reborn
-# → .…CR.WEB.H264-DRiFTKiNG.mkv
-```
-
-A single extracted/passthrough file is renamed to that release name; multi-file
-archives are left inside the output directory as-is.
-
-gimme also strips the trailing ` yEnc` token that many obfuscated posts append
-to article names (`…part1.rar yEnc`), so PAR2 `.par2` parity and RAR `.rar`
-volumes are detected correctly.
-
-### Resume (no re-download)
-
-Every successfully fetched article is cached (decoded, keyed by message-ID). On a
-re-run, cached segments are restored from disk and **only the missing/failed
-ones are re-fetched**, so an interrupted or `TOO CORRUPT` run can be retried
-without pulling everything again — just run the **same command**.
-
-Where the cache lives (override with `-cache`):
-
-| Invocation                        | Cache location                          |
-|-----------------------------------|-----------------------------------------|
-| with `-work DIR`                  | `DIR/.segments/<nzb-id>` (kept with DIR)|
-| without `-work` (auto temp)       | OS cache dir, e.g. `~/Library/Caches/gimme/<nzb-id>` |
-
-The OS-cache default is what makes resume work **without** `-work`: the temp work
-dir (`$TMPDIR/gimme/<id>`) is removed after a successful run, but the cache is
-not. A cache gimme created for you is removed automatically after a run that
-**fully succeeds** (nothing left to resume); on any failure it is kept. An
-explicit `-cache` is never auto-removed.
-
-The final single file is **moved** (renamed) from the work dir into `-o` when
-they share a filesystem, so a multi-gigabyte passthrough is not copied twice.
-
-```sh
-# Plain run: cache goes to the OS cache dir; a failure leaves it for resume.
-./gimme -f release.nzb -o out
-./gimme -f release.nzb -o out          # resumes; only failed segments refetched
-
-# With an explicit work dir, the cache lives beside the (kept) downloads.
-./gimme -f release.nzb -o out -work ~/nzbwork
-./gimme -f release.nzb -o out -work ~/nzbwork -no-preflight   # offline re-stitch
-```
-
-Delete the cache directory (or pass a fresh `-cache`) to force a clean re-download.
-
-### Exit codes
-
-| code | meaning                                     |
-|-----:|---------------------------------------------|
-| 0    | success                                     |
-| 1    | error (config / network / unpack)           |
-| 2    | usage error                                 |
-| 3    | output too corrupt to repair (not enough PAR2) |
-
-## Layout
-
-```
-cmd/gimme/         CLI + pipeline orchestration
-internal/config/   YAML config (versioned), env expansion, provider selection
-internal/fetcher/  NNTP connection pool, per-goroutine conns, failover, stats
-internal/downloader/  concurrent segment download + gap-tolerant reassembly
-internal/repair/   PAR2 verify/repair + too-corrupt classification
-internal/extract/  RAR multi-volume extraction + passthrough
-internal/ui/       plain progress bar + leveled logging
-```
-
-## Notes & limitations
-
-- Built on the pure-Go, CGO-free `go-newsgroups/{nntp,nzb,yenc,par2}` libraries
-  and `nwaples/rardecode`.
-- **PAR2 repair interop:** the Go `par2` library's `Repair` is validated by
-  self-consistent round-trip, not yet byte-for-byte against `par2cmdline`. Verify
-  is hash-based and reliable; if a real-world repair ever misbehaves, the
-  `internal/repair` layer is intentionally thin so a `par2cmdline` fallback can
-  be dropped in.
-- `-o` is treated as a directory when a RAR set extracts multiple files; a
-  single result is written directly to the `-o` path.
-- Qwen3.8 Flash was used in implementing the design <3

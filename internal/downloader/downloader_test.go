@@ -167,15 +167,15 @@ func TestFallbackName(t *testing.T) {
 	}
 	// A trailing " yEnc" token (common in obfuscated posts) must be stripped so
 	// extension-based .rar/.par2 detection still works.
-	yenc := nzb.File{Subject: `"VzNi2PVxQ8OUQrZelsvTio0jyZJzYJ.rar yEnc" (1/1)`}
-	if got := fallbackName(yenc, 0); got != "VzNi2PVxQ8OUQrZelsvTio0jyZJzYJ.rar" {
+	yenc := nzb.File{Subject: `"Quackers.rar yEnc" (1/1)`}
+	if got := fallbackName(yenc, 0); got != "Quackers.rar" {
 		t.Fatalf("fallback yenc got %q", got)
 	}
 }
 
 func TestHasStructuralExt(t *testing.T) {
 	yes := []string{"a.part01.rar", "a.part10.RAR", "movie.par2", "vol00-01.PAR2", "a.r00", "b.zip", "c.7z", "d.001"}
-	no := []string{"VzNi2PVxQ8OUQrZelsvTio0jyZJzYJ", "file005.bin", "movie.mkv", "notes.nfo", "a.abc"}
+	no := []string{"Quackers", "file005.bin", "movie.mkv", "notes.nfo", "a.abc"}
 	for _, s := range yes {
 		if !hasStructuralExt(s) {
 			t.Errorf("hasStructuralExt(%q)=false want true", s)
@@ -190,8 +190,8 @@ func TestHasStructuralExt(t *testing.T) {
 
 func TestFallbackNameHTMLEntities(t *testing.T) {
 	// NZB subjects carry &quot; for the quote delimiters (as seen in the wild).
-	f := nzb.File{Subject: `[02/18] - &quot;The.Road.Within.2014.part01.rar&quot; yEnc (1/732)`}
-	if got := fallbackName(f, 1); got != "The.Road.Within.2014.part01.rar" {
+	f := nzb.File{Subject: `[02/18] - &quot;Sir.Squeaks.2014.part01.rar&quot; yEnc (1/732)`}
+	if got := fallbackName(f, 1); got != "Sir.Squeaks.2014.part01.rar" {
 		t.Fatalf("fallbackName(HTML) = %q", got)
 	}
 }
@@ -207,8 +207,8 @@ func TestLockNameKeepsStructuralSubjectOverObfuscatedYenc(t *testing.T) {
 		yenc    string // partName from the yEnc header
 		want    string
 	}{
-		{"obfuscated hash keeps subject .rar", "The.Road.part01.rar", "6wZmg5pk7PYMbFJsNQIjdhQTpNUbwJderhfbFrc5OQJkd2BKhAssqBh", "The.Road.part01.rar"},
-		{"obfuscated hash keeps subject .par2", "release.vol00-01.par2", "aX9zQ1b2c3d4e5f6g7h8i9j0", "release.vol00-01.par2"},
+		{"obfuscated gibberish keeps subject .rar", "Sir.Squeaks.part01.rar", "SupercalifragilisticExpiAlidocious", "Sir.Squeaks.part01.rar"},
+		{"obfuscated gibberish keeps subject .par2", "quackers.vol00-01.par2", "HocusPocusPocus", "quackers.vol00-01.par2"},
 		{"normal yenc matches subject", "movie.part1.rar", "movie.part1.rar", "movie.part1.rar"},
 		{"good yenc fills extensionless subject", "file005.bin", "real.movie.mkv", "real.movie.mkv"},
 		{"good yenc wins over placeholder", "file005.bin", "movie.mkv", "movie.mkv"},
